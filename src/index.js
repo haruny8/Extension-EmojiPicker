@@ -3,6 +3,8 @@ import data from '@emoji-mart/data';
 import { createPopper } from '@popperjs/core';
 import './style.css';
 
+const MOBILE_PICKER_MEDIA = '(max-width: 768px)';
+
 const textarea = document.getElementById('send_textarea');
 
 if (!(textarea instanceof HTMLTextAreaElement)) {
@@ -30,18 +32,18 @@ function typeInTextarea(newText, el = document.activeElement) {
  * @param {{native: string}} inputEmoji Emoji object
  * @returns
  */
-function insertEmoji(inputEmoji) {
+let targetTextarea = textarea;
+let pickerAnchor;
+let popper;
 
+function insertEmoji(inputEmoji) {
     const emoji = inputEmoji.native;
-    typeInTextarea(emoji, textarea);
-    textarea.focus();
+    typeInTextarea(emoji, targetTextarea);
+    targetTextarea.focus();
     picker.classList.add('displayNone');
     popper.update();
-    const event = new Event('input', {
-        bubbles: true,
-        cancelable: true,
-    });
-    textarea.dispatchEvent(event);
+    const event = new Event('input', { bubbles: true, cancelable: true });
+    targetTextarea.dispatchEvent(event);
 }
 
 /**
@@ -120,20 +122,41 @@ const pickerOptions = {
     previewPosition: 'none',
     skinTonePosition: 'search',
 };
+
+function fixPickerEmojiLayout(pickerElement) {
+    const shadowRoot = pickerElement.shadowRoot;
+    if (!shadowRoot || shadowRoot.querySelector('#st-emoji-picker-layout-fix')) return;
+
+    const style = document.createElement('style');
+    style.id = 'st-emoji-picker-layout-fix';
+    style.textContent = `
+        .emoji-mart-emoji { height: 32px !important; line-height: 32px !important; }
+        .emoji-mart-emoji > span { line-height: 32px !important; }
+    `;
+    shadowRoot.appendChild(style);
+}
+
 const picker = new Picker(pickerOptions);
+fixPickerEmojiLayout(picker);
 const buttonContainer = document.getElementById('rightSendForm');
 const addEmojiButton = document.createElement('div');
 addEmojiButton.id = 'addEmojiButton';
 addEmojiButton.title = 'Insert emoji';
 addEmojiButton.classList.add('fa-solid', 'fa-icons', 'interactable');
 addEmojiButton.tabIndex = 0;
-const popper = createPopper(addEmojiButton, picker, {
+popper = createPopper(addEmojiButton, picker, {
     placement: 'top-end',
     modifiers: [],
 });
 picker.classList.add('displayNone');
 buttonContainer.insertAdjacentElement('afterbegin', addEmojiButton);
-buttonContainer.addEventListener('click', () => {
+function togglePicker(anchor, target) {
+    targetTextarea = target;
+    if (anchor !== pickerAnchor) {
+        popper.destroy();
+        popper = createPopper(anchor, picker, { placement: 'top-end', modifiers: [] });
+        pickerAnchor = anchor;
+    }
     picker.classList.toggle('displayNone');
     popper.update();
 
@@ -145,19 +168,88 @@ buttonContainer.addEventListener('click', () => {
             search.focus();
         }
     } else {
-        textarea.focus();
+        targetTextarea.focus();
+    }
+}
+buttonContainer.addEventListener('click', () => togglePicker(addEmojiButton, textarea));
+document.body.appendChild(picker);
+
+function resetPickerSearch(pickerElement) {
+    const search = pickerElement.shadowRoot?.querySelector('input[type="search"]');
+    if (search instanceof HTMLInputElement) {
+        search.value = '';
+        search.dispatchEvent(new Event('input'));
+        search.focus();
+    }
+}
+
+let copilotPicker;
+let copilotPopper;
+let copilotTarget;
+function openCopilotPicker(target, anchor) {
+    if (window.matchMedia(MOBILE_PICKER_MEDIA).matches) {
+        copilotPicker?.classList.add('displayNone');
+        return false;
+    }
+    if (!copilotPicker) {
+        copilotTarget = target;
+        copilotPicker = new Picker({
+            ...pickerOptions,
+            onEmojiSelect: inputEmoji => {
+                typeInTextarea(inputEmoji.native, copilotTarget);
+                copilotTarget.focus();
+                copilotPicker.classList.add('displayNone');
+                copilotPopper.update();
+                copilotTarget.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+            },
+        });
+        fixPickerEmojiLayout(copilotPicker);
+        copilotPicker.classList.add('displayNone');
+        document.body.appendChild(copilotPicker);
+    }
+    copilotTarget = target;
+    if (anchor === pickerAnchor && !copilotPicker.classList.contains('displayNone')) {
+        copilotPicker.classList.add('displayNone');
+        copilotPopper?.update();
+        return false;
+    }
+    if (copilotPopper) copilotPopper.destroy();
+    copilotPopper = createPopper(anchor, copilotPicker, { placement: 'top-end', modifiers: [] });
+    pickerAnchor = anchor;
+    copilotPicker.classList.remove('displayNone');
+    copilotPopper.update();
+    resetPickerSearch(copilotPicker);
+    return true;
+}
+
+window.STEmojiPicker = {
+    openFor(target, anchor) {
+        if (!(target instanceof HTMLTextAreaElement) || !(anchor instanceof HTMLElement)) return;
+        return openCopilotPicker(target, anchor);
+    },
+};
+window.matchMedia(MOBILE_PICKER_MEDIA).addEventListener('change', event => {
+    if (event.matches) {
+        copilotPicker?.classList.add('displayNone');
     }
 });
-document.body.appendChild(picker);
 document.body.addEventListener('click', (event) => {
-    if (!picker.classList.contains('displayNone') && !picker.contains(event.target) && !addEmojiButton.contains(event.target)) {
+    if (!picker.classList.contains('displayNone') && !picker.contains(event.target) && !event.target.closest('#addEmojiButton')) {
         picker.classList.add('displayNone');
         popper.update();
+    }
+    if (copilotPicker && !copilotPicker.classList.contains('displayNone') && !copilotPicker.contains(event.target) && !event.target.closest('.scp-emoji-btn')) {
+        copilotPicker.classList.add('displayNone');
+        copilotPopper?.update();
     }
 });
 document.body.addEventListener('keyup', (event) => {
     if (!picker.classList.contains('displayNone') && event.key === 'Escape') {
         picker.classList.add('displayNone');
         popper.update();
+    }
+    if (copilotPicker && !copilotPicker.classList.contains('displayNone') && event.key === 'Escape') {
+        copilotPicker.classList.add('displayNone');
+        copilotPopper?.update();
     }
 });
